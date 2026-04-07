@@ -1,0 +1,170 @@
+version: 2
+
+models:
+  - name: int_finance_revenue_base
+    description: >
+      Modelo intermediário de receita. Une transações, merchants e settlements para calcular
+      o impacto financeiro de cada transação no resultado da plataforma.
+
+      Regras de negócio aplicadas:
+        - Filtra apenas transações com impacto financeiro: captured, refunded, chargeback
+        - Enriquece transações com dados do merchant (trade_name, mcc_code) via LEFT JOIN
+        - Faz match com o settlement mais recente por transaction_id (settlement_rank = 1)
+        - Calcula revenue_impact: positivo para captured, negativo para refunded e chargeback
+
+      Sobre transações sem settlement:
+        O LEFT JOIN com settlements preserva transações que ainda não foram liquidadas.
+        Para essas transações, settlement_id e demais campos de settlement serão NULL.
+        Atenção ao filtrar por settlement_id — um IS NULL pode indicar transação pendente de liquidação.
+
+      Sobre o JOIN com settlements:
+        O modelo stg_raw_settlements já normalizou o ARRAY transaction_ids em linhas individuais.
+        O JOIN aqui é por igualdade simples, sem produto cartesiano — correção do problema de custo do legado.
+
+      Consumidores: revenue_report (mart), merchant_summary (mart)
+    meta:
+      layer: intermediate
+      domain: finance
+      primary_grain: transaction
+      consumers: "revenue_report, merchant_summary"
+    columns:
+      - name: transaction_id
+        description: Identificador único da transação. Único neste modelo após deduplicação por settlement_rank.
+        meta:
+          semantic_type: identifier
+          entity: transaction
+        tests:
+          - unique
+          - not_null
+
+      - name: merchant_id
+        description: Identificador do merchant que recebeu a transação.
+        meta:
+          semantic_type: identifier
+          entity: merchant
+        tests:
+          - not_null
+
+      - name: merchant_name
+        description: >
+          Nome fantasia do merchant no momento de processamento do modelo.
+          Reflete o estado atual de stg_raw_merchants — sem histórico de alterações.
+          Se trade_name mudar, relatórios históricos mostrarão o nome novo para transações antigas.
+        meta:
+          semantic_type: label
+          entity: merchant
+          temporal_warning: "reflete o nome atual, não o nome na época da transação"
+
+      - name: mcc_code
+        description: Merchant Category Code do merchant no momento de processamento do modelo.
+        meta:
+          semantic_type: categorical
+          standard: ISO_18245
+
+      - name: customer_id
+        description: Identificador do cliente que originou a transação.
+        meta:
+          semantic_type: identifier
+          entity: customer
+
+      - name: amount_brl
+        description: Valor bruto original da transação em reais. Sempre positivo.
+        meta:
+          semantic_type: monetary
+          currency: BRL
+          sign_semantics: always_positive
+          never_use_for: "cálculo de receita total — use revenue_impact"
+        tests:
+          - not_null
+
+      - name: status
+        description: Status da transação filtrado para os valores com impacto financeiro.
+        meta:
+          semantic_type: categorical
+          known_values: "captured, refunded, chargeback"
+          use_for: filtering_and_revenue_sign
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['captured', 'refunded', 'chargeback']
+
+      - name: payment_method
+        description: Método de pagamento utilizado na transação.
+        meta:
+          semantic_type: categorical
+          use_for: filtering_and_segmentation
+
+      - name: transaction_date
+        description: Data da transação extraída de created_at. Usada como campo de partição nos marts.
+        meta:
+          semantic_type: date
+          use_for: partitioning_and_time_filtering
+        tests:
+          - not_null
+
+      - name: created_at
+        description: Timestamp completo de criação da transação.
+        meta:
+          semantic_type: timestamp
+          time_zone: UTC
+
+      - name: settlement_id
+        description: >
+          ID do settlement mais recente associado à transação.
+          NULL indica que a transação ainda não possui settlement — não deve ser filtrada como erro.
+        meta:
+          semantic_type: identifier
+          entity: settlement
+          nullable_semantics: "NULL = transação pendente de liquidação, não dado inválido"
+
+      - name: net_amount_brl
+        description: >
+          Valor líquido pago ao merchant após dedução das taxas da plataforma, em reais.
+          Proveniente do settlement mais recente. NULL se não houver settlement.
+        meta:
+          semantic_type: monetary
+          currency: BRL
+          perspective: merchant_receives
+          nullable_semantics: "NULL = sem settlement ainda"
+
+      - name: fee_amount_brl
+        description: >
+          Valor da taxa cobrada pela plataforma nesta transação, em reais.
+          Proveniente do settlement mais recente. NULL se não houver settlement.
+        meta:
+          semantic_type: monetary
+          currency: BRL
+          perspective: platform_revenue
+          nullable_semantics: "NULL = sem settlement ainda"
+
+      - name: settlement_date
+        description: Data de referência contábil do settlement. NULL se não houver settlement.
+        meta:
+          semantic_type: date
+          nullable_semantics: "NULL = sem settlement ainda"
+
+      - name: paid_at
+        description: Timestamp de pagamento efetivo ao merchant. NULL se não houver settlement.
+        meta:
+          semantic_type: timestamp
+          time_zone: UTC
+          nullable_semantics: "NULL = sem settlement ainda"
+
+      - name: revenue_impact
+        description: >
+          Impacto financeiro da transação no resultado da plataforma em reais.
+          captured  → +amount_brl (receita positiva)
+          refunded  → -amount_brl (estorno reduz receita)
+          chargeback → -amount_brl (contestação reduz receita)
+
+          ATENÇÃO: não use amount_brl diretamente para calcular receita total.
+          Use revenue_impact, que já considera o sinal correto por status.
+
+          TODO: confirmar com o time financeiro se chargebacks têm tarifa adicional
+          que deve ser somada ao revenue_impact (ex: -amount_brl - chargeback_fee).
+        meta:
+          semantic_type: monetary
+          currency: BRL
+          sign_semantics: "positive=captured, negative=refunded_or_chargeback"
+          use_for: revenue_calculation
+          never_use_for: "transaction_count ou volume bruto — use amount_brl para volume"

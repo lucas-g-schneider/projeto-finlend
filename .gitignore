@@ -1,0 +1,22 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# dbt
+target/
+dbt_packages/
+logs/
+.user.yml
+profiles.yml
+
+# Python
+__pycache__/
+*.py[cod]
+.env
+.venv/
+
+# Editors
+.vscode/
+.idea/
+*.swp

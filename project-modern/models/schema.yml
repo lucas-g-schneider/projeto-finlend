@@ -1,0 +1,48 @@
+version: 2
+
+sources:
+  - name: raw
+    description: >
+      Camada de dados brutos ingerida pelo pipeline de dados da FinLend.
+      Dados chegam sem transformação do sistema transacional.
+
+      Regra do projeto: apenas modelos de staging podem referenciar sources diretamente.
+      Modelos intermediate e mart devem referenciar staging via ref() — nunca source() diretamente.
+      Isso garante rastreabilidade de linhagem e centraliza transformações de tipagem na camada correta.
+
+    tables:
+      - name: transactions
+        description: >
+          Tabela de transações financeiras brutas. Cada linha representa uma transação processada
+          pelo sistema da FinLend. O campo metadata (JSON volumoso com payload do gateway,
+          device info e geolocalização) não é propagado para os modelos downstream, 
+          removido intencionalmente no staging para redução de custo de scan no BigQuery.
+        loaded_at_field: loaded_at
+        freshness:
+          warn_after: {count: 24, period: hour}
+          error_after: {count: 48, period: hour}
+
+      - name: merchants
+        description: >
+          Cadastro de merchants da plataforma. Contém campos que podem mudar ao longo do tempo
+          (trade_name, mcc_code). Os modelos atuais sempre refletem o estado mais recente,
+          sem histórico de alterações. Um snapshot SCD Tipo 2 é necessário para garantir que
+          relatórios históricos mostrem o nome/MCC correto na época de cada transação.
+          Implementação de snapshot está planejada como próximo passo (ver README).
+        loaded_at_field: loaded_at
+        freshness:
+          warn_after: {count: 48, period: hour}
+          error_after: {count: 72, period: hour}
+
+      - name: settlements
+        description: >
+          Liquidações financeiras brutas. O campo transaction_ids é um ARRAY contendo os IDs
+          das transações incluídas em cada settlement. Uma transação pode aparecer em mais de
+          um settlement em casos de reprocessamento ou correção.
+          O modelo stg_raw_settlements normaliza este ARRAY com CROSS JOIN UNNEST,
+          gerando uma linha por transaction_id, eliminando o produto cartesiano que ocorria
+          no modelo legado e que era a principal causa do custo elevado no BigQuery.
+        loaded_at_field: loaded_at
+        freshness:
+          warn_after: {count: 24, period: hour}
+          error_after: {count: 48, period: hour}

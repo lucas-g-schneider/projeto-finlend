@@ -1,0 +1,83 @@
+version: 2
+
+models:
+  - name: stg_raw_settlements
+    description: >
+      Staging de settlements financeiros. Normaliza a estrutura de raw.settlements:
+      o campo transaction_ids (ARRAY) é desnormalizado com CROSS JOIN UNNEST,
+      gerando uma linha por transaction_id por settlement.
+
+      Esta é a principal correção de custo do projeto:
+      o modelo legado fazia IN UNNEST() dentro de uma condição de JOIN, forçando um produto
+      cartesiano implícito entre todas as transações e todos os settlements.
+      Ao normalizar aqui, o JOIN downstream torna-se uma igualdade simples — sem cartesiano.
+
+      Impacto secundário: também corrige potencial incorreção de dados para os analistas.
+      O produto cartesiano no modelo legado podia selecionar o settlement errado para uma transação
+      quando havia reprocessamentos, gerando net_amount e fee_amount incorretos nos relatórios.
+
+      Regra da camada: sem joins com outros modelos, apenas normalização estrutural e cast de tipos.
+    meta:
+      layer: staging
+      domain: finance
+      primary_grain: settlement_per_transaction
+      source_table: raw.settlements
+      normalization_note: "ARRAY transaction_ids desnormalizado em linhas — granularidade é 1 linha por (settlement_id, transaction_id)"
+    columns:
+      - name: settlement_id
+        description: Identificador único do settlement. Um settlement pode conter múltiplas transações.
+        meta:
+          semantic_type: identifier
+          entity: settlement
+          cardinality: "um settlement para muitas transações"
+        tests:
+          - not_null
+
+      - name: transaction_id
+        description: >
+          Identificador da transação associada a este settlement.
+          Desnormalizado do campo transaction_ids (ARRAY) via CROSS JOIN UNNEST.
+          Uma mesma transação pode aparecer em mais de um settlement em casos de reprocessamento —
+          a deduplicação pelo settlement mais recente é feita na camada intermediate.
+        meta:
+          semantic_type: identifier
+          entity: transaction
+          join_to: stg_raw_transactions.transaction_id
+          dedup_warning: "não é único neste modelo — deduplicação ocorre em int_finance_revenue_base"
+        tests:
+          - not_null
+
+      - name: net_amount_brl
+        description: Valor líquido do settlement em reais (net_amount_cents / 100.0), após dedução de taxas.
+        meta:
+          semantic_type: monetary
+          currency: BRL
+          unit: reais
+          perspective: merchant_receives
+
+      - name: fee_amount_brl
+        description: Valor da taxa cobrada pela plataforma neste settlement, em reais (fee_amount_cents / 100.0).
+        meta:
+          semantic_type: monetary
+          currency: BRL
+          unit: reais
+          perspective: platform_revenue
+
+      - name: settlement_date
+        description: Data de referência do settlement para fins contábeis e de repasse ao merchant.
+        meta:
+          semantic_type: date
+          use_for: deduplication_ordering_in_intermediate
+
+      - name: paid_at
+        description: Timestamp de quando o pagamento do settlement ao merchant foi efetivamente realizado.
+        meta:
+          semantic_type: timestamp
+          time_zone: UTC
+
+      - name: loaded_at
+        description: Timestamp de quando o dado foi ingerido na camada raw pelo pipeline de dados.
+        meta:
+          semantic_type: timestamp
+          source: ingestion_pipeline
+          use_for: source_freshness

@@ -1,0 +1,148 @@
+version: 2
+
+models:
+  - name: revenue_report
+    description: >
+      Mart de relatório de receita transacional. Particionado por transaction_date (dia).
+      Dados prontos para consumo por analistas, dashboards e ferramentas de BI.
+
+      Consome de int_finance_revenue_base — todas as regras de negócio já aplicadas.
+      Colunas nomeadas de forma descritiva para facilitar leitura direta no BigQuery e em relatórios.
+
+      ATENÇÃO para analistas:
+        - Use "Impacto no Resultado BRL" para calcular receita total — não use "Valor Bruto BRL".
+          O "Valor Bruto BRL" é sempre positivo; o impacto já considera o sinal por status.
+        - Transações com "ID do Settlement" = NULL são transações ainda não liquidadas.
+        - O modelo inclui captured, refunded E chargeback. Filtre por "Status da Transacao" conforme necessário.
+    meta:
+      layer: mart
+      domain: finance
+      primary_grain: transaction
+      partition_field: transaction_date
+      always_filter_by: "transaction_date — obrigatório para aproveitar partição e evitar full scan"
+    columns:
+      - name: ID da Transacao
+        description: Identificador único da transação. Granularidade de uma linha por transação.
+        meta:
+          semantic_type: identifier
+          entity: transaction
+
+      - name: ID do Merchant
+        description: Identificador do merchant que recebeu a transação.
+        meta:
+          semantic_type: identifier
+          entity: merchant
+
+      - name: Nome do Merchant
+        description: Nome fantasia do merchant. Reflete o cadastro atual — sem histórico de alterações.
+        meta:
+          semantic_type: label
+          entity: merchant
+          use_for: filtering_by_name
+          temporal_warning: "reflete o nome atual, não o nome na época da transação"
+
+      - name: Codigo MCC
+        description: >
+          Merchant Category Code — classifica o tipo de negócio do merchant (padrão ISO 18245).
+          TODO: solicitar tabela de referência de MCCs ao time de negócio para enriquecer análises por segmento.
+        meta:
+          semantic_type: categorical
+          standard: ISO_18245
+          known_values: "TODO — validar com time de negócio"
+
+      - name: Valor Bruto BRL
+        description: >
+          Valor original da transação em reais. Sempre positivo, independente do status.
+          NÃO use para calcular receita total — use "Impacto no Resultado BRL".
+        meta:
+          semantic_type: monetary
+          currency: BRL
+          sign_semantics: always_positive
+          never_use_for: "receita total — ignora estornos e chargebacks"
+          use_for: volume_bruto_de_transacoes
+
+      - name: Status da Transacao
+        description: >
+          Status operacional da transação.
+          captured  = transação aprovada e liquidada
+          refunded  = transação estornada ao cliente
+          chargeback = transação contestada pelo cliente via banco emissor
+        meta:
+          semantic_type: categorical
+          known_values: "captured, refunded, chargeback"
+          use_for: filtering
+
+      - name: Metodo de Pagamento
+        description: Forma de pagamento utilizada (ex: pix, credit_card, debit_card, boleto).
+        meta:
+          semantic_type: categorical
+          known_values: "pix, credit_card, debit_card, boleto — lista não exaustiva"
+          use_for: filtering_and_segmentation
+
+      - name: transaction_date
+        description: >
+          Data da transação. Campo de partição da tabela — filtre sempre por esta coluna
+          para aproveitar a partição e reduzir custo de query no BigQuery.
+        meta:
+          semantic_type: date
+          is_partition_field: true
+          use_for: "time filtering — obrigatório para performance"
+
+      - name: Criado Em
+        description: Timestamp completo de criação da transação (UTC).
+        meta:
+          semantic_type: timestamp
+          time_zone: UTC
+
+      - name: ID do Settlement
+        description: >
+          Identificador do settlement associado à transação.
+          NULL indica transação ainda não liquidada — não tratar como erro.
+        meta:
+          semantic_type: identifier
+          entity: settlement
+          nullable_semantics: "NULL = transação pendente de liquidação, não dado inválido"
+
+      - name: Valor Liquido BRL
+        description: Valor efetivamente pago ao merchant após dedução das taxas da plataforma.
+        meta:
+          semantic_type: monetary
+          currency: BRL
+          perspective: merchant_receives
+          never_use_for: "faturamento da plataforma — use Taxa BRL para receita da plataforma"
+
+      - name: Taxa BRL
+        description: Valor da taxa cobrada pela plataforma sobre esta transação.
+        meta:
+          semantic_type: monetary
+          currency: BRL
+          perspective: platform_revenue
+          use_for: "cálculo de faturamento de taxas da plataforma"
+
+      - name: Data do Settlement
+        description: Data de referência contábil do settlement para fins de repasse.
+        meta:
+          semantic_type: date
+
+      - name: Pago Em
+        description: Timestamp de quando o pagamento ao merchant foi efetivado.
+        meta:
+          semantic_type: timestamp
+          time_zone: UTC
+
+      - name: Impacto no Resultado BRL
+        description: >
+          Efeito financeiro no resultado da plataforma em reais.
+          captured   → positivo (+Valor Bruto BRL)
+          refunded   → negativo (-Valor Bruto BRL)
+          chargeback → negativo (-Valor Bruto BRL)
+
+          Use esta coluna para SUM de receita total. Valores negativos já estão refletidos.
+          TODO: confirmar com o time financeiro se chargebacks têm tarifa adicional
+          que deve ser incorporada a este cálculo.
+        meta:
+          semantic_type: monetary
+          currency: BRL
+          sign_semantics: "positive=captured, negative=refunded_or_chargeback"
+          use_for: revenue_calculation
+          never_use_for: "contagem de transações ou volume bruto"

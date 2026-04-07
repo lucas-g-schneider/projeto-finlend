@@ -1,0 +1,16 @@
+version: 2
+
+sources:
+  - name: raw
+    tables:
+      - name: transactions
+      - name: merchants
+      - name: settlements
+
+models:
+  - name: stg_transactions
+    description: "staging transactions"
+  - name: revenue_report
+    description: "report for revenue"
+  - name: merchant_summary
+    description: "summary by merchant"

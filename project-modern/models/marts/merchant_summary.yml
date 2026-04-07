@@ -1,0 +1,105 @@
+version: 2
+
+models:
+  - name: merchant_summary
+    description: >
+      Mart de resumo financeiro e operacional por merchant.
+      Agrega métricas de receita, taxas e chargebacks no nível do merchant.
+      Dados prontos para consumo por analistas, time de produto e dashboards executivos.
+
+      Consome de int_finance_revenue_base — granularidade de transação — e agrega por merchant.
+      Não consome de revenue_report para evitar dependência de colunas com nomes compostos.
+
+      ATENÇÃO para analistas:
+        - "Total de Transacoes" inclui captured + refunded + chargeback.
+          TODO: confirmar com o time de negócio se a definição de "total de transações"
+          deve incluir ou excluir estornos e chargebacks (ex: para SLA de volume).
+        - "Receita Total BRL" pode ser negativa para merchants com alto volume de chargebacks.
+        - "Taxa de Chargeback" usa SAFE_DIVIDE — retorna NULL se não houver transações (impossível
+          neste contexto, mas garantia de robustez do código).
+        - Este modelo agrega o HISTÓRICO COMPLETO — sem filtro de período pré-aplicado.
+          Para análise por trimestre ou semana, use revenue_report com GROUP BY merchant.
+    meta:
+      layer: mart
+      domain: finance
+      primary_grain: merchant
+      aggregation_scope: "histórico completo — sem filtro de período"
+      period_filter_warning: "não use este modelo para análises por período — ele não tem partição temporal"
+    columns:
+      - name: ID do Merchant
+        description: Identificador único do merchant. Granularidade de uma linha por merchant.
+        meta:
+          semantic_type: identifier
+          entity: merchant
+
+      - name: Nome do Merchant
+        description: Nome fantasia do merchant conforme cadastro atual em stg_raw_merchants.
+        meta:
+          semantic_type: label
+          entity: merchant
+          use_for: filtering_by_name
+
+      - name: Codigo MCC
+        description: Merchant Category Code do merchant conforme cadastro atual.
+        meta:
+          semantic_type: categorical
+          standard: ISO_18245
+
+      - name: Total de Transacoes
+        description: >
+          Quantidade total de transações do merchant (captured + refunded + chargeback).
+          TODO: confirmar com o time de negócio se deve excluir refunded/chargeback desta contagem.
+        meta:
+          semantic_type: count
+          includes_statuses: "captured, refunded, chargeback"
+          never_use_for: "contagem apenas de aprovadas — filtre captured no revenue_report"
+
+      - name: Receita Total BRL
+        description: >
+          Soma do impacto no resultado de todas as transações do merchant.
+          Considera o sinal: captured soma positivo, refunded e chargeback somam negativo.
+          Pode ser negativo para merchants com alto volume de estornos ou chargebacks.
+        meta:
+          semantic_type: monetary
+          currency: BRL
+          sign_semantics: "pode ser negativo para merchants com alto chargeback"
+          use_for: revenue_ranking
+
+      - name: Total de Taxas BRL
+        description: >
+          Soma das taxas cobradas pela plataforma sobre as transações do merchant.
+          Inclui apenas transações com settlement associado — transações pendentes têm fee_amount_brl = NULL.
+        meta:
+          semantic_type: monetary
+          currency: BRL
+          perspective: platform_revenue
+          nullable_note: "transações sem settlement não contribuem para este total"
+
+      - name: Total de Chargebacks
+        description: Quantidade de transações com status chargeback no período total.
+        meta:
+          semantic_type: count
+          use_for: chargeback_analysis
+
+      - name: Taxa de Chargeback
+        description: >
+          Proporção de chargebacks sobre o total de transações (Total de Chargebacks / Total de Transacoes).
+          Calculado com SAFE_DIVIDE para garantir robustez em caso de divisão por zero.
+          Referência de alerta: taxa acima de 2% é considerada crítica pela maioria das bandeiras de cartão.
+        meta:
+          semantic_type: rate
+          range: "0.0 a 1.0"
+          alert_threshold: 0.02
+          use_for: risk_monitoring
+
+      - name: Primeira Transacao
+        description: Data da primeira transação do merchant registrada na plataforma.
+        meta:
+          semantic_type: date
+          use_for: merchant_activation_analysis
+
+      - name: Ultima Transacao
+        description: Data da transação mais recente do merchant registrada na plataforma.
+        meta:
+          semantic_type: date
+          use_for: merchant_activity_monitoring

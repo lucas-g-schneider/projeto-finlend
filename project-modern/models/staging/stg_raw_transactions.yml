@@ -1,0 +1,113 @@
+version: 2
+
+models:
+  - name: stg_raw_transactions
+    description: >
+      Staging de transações financeiras. Modelo 1:1 com raw.transactions.
+      Aplica cast de tipos, normaliza status (lower + trim) e remove transações de teste.
+      Coluna metadata excluída intencionalmente — não consumida downstream, reduz custo de scan.
+      Regra da camada: sem joins, sem regras de negócio, apenas tipagem e normalização básica.
+    meta:
+      layer: staging
+      domain: finance
+      primary_grain: transaction
+      source_table: raw.transactions
+    columns:
+      - name: transaction_id
+        description: Identificador único da transação no sistema transacional.
+        meta:
+          semantic_type: identifier
+          entity: transaction
+        tests:
+          - unique
+          - not_null
+
+      - name: merchant_id
+        description: Identificador do merchant que recebeu a transação. FK para stg_raw_merchants.
+        meta:
+          semantic_type: identifier
+          entity: merchant
+          join_to: stg_raw_merchants.merchant_id
+        tests:
+          - not_null
+
+      - name: customer_id
+        description: Identificador do cliente que originou a transação.
+        meta:
+          semantic_type: identifier
+          entity: customer
+        tests:
+          - not_null
+
+      - name: amount_cents
+        description: Valor bruto da transação em centavos (inteiro). Campo original da fonte.
+        meta:
+          semantic_type: monetary
+          currency: BRL
+          unit: cents
+          use_for: raw_source_only
+          never_use_for: analysis — use amount_brl
+        tests:
+          - not_null
+
+      - name: amount_brl
+        description: >
+          Valor bruto da transação em reais (amount_cents / 100.0).
+          Cast explícito para FLOAT64 garante resultado decimal mesmo em divisões como 50 centavos.
+        meta:
+          semantic_type: monetary
+          currency: BRL
+          unit: reais
+          sign_semantics: always_positive
+
+      - name: status
+        description: >
+          Status atual da transação, normalizado para lowercase.
+          Transações com status 'test' são filtradas nesta camada.
+          TODO: solicitar ao time de negócio a lista completa e definitiva de status possíveis
+          para configurar accepted_values com todos os valores válidos.
+        meta:
+          semantic_type: categorical
+          use_for: filtering
+          known_values: "captured, refunded, chargeback, pending, failed, cancelled"
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['captured', 'refunded', 'chargeback', 'pending', 'failed', 'cancelled']
+
+      - name: payment_method
+        description: >
+          Método de pagamento utilizado na transação (ex: pix, credit_card, debit_card, boleto).
+          TODO: confirmar com o time de produto a lista completa de métodos suportados
+          para adicionar accepted_values e habilitar análise de volume por método de pagamento.
+        meta:
+          semantic_type: categorical
+          use_for: filtering_and_segmentation
+          known_values: "pix, credit_card, debit_card, boleto — lista incompleta, validar com produto"
+
+      - name: created_at
+        description: Timestamp de criação da transação no sistema transacional (fuso horário UTC).
+        meta:
+          semantic_type: timestamp
+          time_zone: UTC
+          use_for: partitioning_via_transaction_date
+        tests:
+          - not_null
+
+      - name: updated_at
+        description: Timestamp da última atualização da transação no sistema transacional.
+        meta:
+          semantic_type: timestamp
+          time_zone: UTC
+
+      - name: loaded_at
+        description: >
+          Timestamp de quando o dado foi ingerido na camada raw pelo pipeline de dados.
+          Provido pela equipe de engenharia durante a ingestão — NÃO é o momento de execução do dbt.
+          Use este campo para monitorar source freshness e como campo de controle em modelos incrementais.
+        meta:
+          semantic_type: timestamp
+          time_zone: UTC
+          source: ingestion_pipeline
+          use_for: source_freshness_and_incremental_control
+          never_use_for: "substituto de created_at — representa ingestão, não criação da transação"

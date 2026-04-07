@@ -1,0 +1,68 @@
+version: 2
+
+models:
+  - name: stg_raw_merchants
+    description: >
+      Staging de merchants. Modelo 1:1 com raw.merchants.
+      Padroniza o identificador primário de id para merchant_id para consistência com outros modelos.
+      Regra da camada: sem joins, sem regras de negócio, apenas renomeação e tipagem básica.
+
+      ATENÇÃO: dados de merchants mudam ao longo do tempo (trade_name, mcc_code podem ser alterados).
+      Este modelo sempre reflete o estado ATUAL do cadastro, sem histórico.
+      Para análises históricas precisas, um snapshot SCD Tipo 2 é necessário (planejado — ver README).
+    meta:
+      layer: staging
+      domain: finance
+      primary_grain: merchant
+      source_table: raw.merchants
+      scd_warning: "sem histórico de alterações — reflete estado atual. Snapshot SCD2 planejado."
+    columns:
+      - name: merchant_id
+        description: Identificador único do merchant na plataforma. Renomeado de id para merchant_id.
+        meta:
+          semantic_type: identifier
+          entity: merchant
+        tests:
+          - unique
+          - not_null
+
+      - name: trade_name
+        description: Nome fantasia do merchant conforme cadastro atual. Pode mudar ao longo do tempo.
+        meta:
+          semantic_type: label
+          entity: merchant
+          temporal_warning: "reflete o nome atual, não o nome na época de cada transação"
+        tests:
+          - not_null
+
+      - name: mcc_code
+        description: >
+          Merchant Category Code — código de 4 dígitos que classifica o tipo de negócio do merchant
+          conforme padrão ISO 18245.
+          TODO: solicitar ao time de negócio a tabela de referência dos MCCs utilizados na plataforma
+          para adicionar accepted_values e descrição semântica de cada categoria.
+          Necessário para análises de chargeback e risco por segmento.
+        meta:
+          semantic_type: categorical
+          standard: ISO_18245
+          use_for: merchant_segmentation
+          known_values: "TODO — validar lista com time de negócio"
+
+      - name: created_at
+        description: Timestamp de criação do cadastro do merchant no sistema.
+        meta:
+          semantic_type: timestamp
+          time_zone: UTC
+
+      - name: updated_at
+        description: Timestamp da última atualização do cadastro do merchant.
+        meta:
+          semantic_type: timestamp
+          time_zone: UTC
+
+      - name: loaded_at
+        description: Timestamp de quando o dado foi ingerido na camada raw pelo pipeline de dados.
+        meta:
+          semantic_type: timestamp
+          source: ingestion_pipeline
+          use_for: source_freshness
