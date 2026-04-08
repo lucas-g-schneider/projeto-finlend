@@ -294,14 +294,35 @@ Este é exatamente o tipo de erro silencioso que gerava "os números nunca batem
 
 ### Orquestração (dbt Cloud)
 
-#### Jobs e Frequência Recomendada
+#### Environments
+
+Dois environments configurados: desenvolvimento (materialização em view para iteração rápida) e produção (materialização em table para consumo pelos analistas).
+
+![Environments configurados](docs/dbt-cloud/01_environments.png)
+
+---
+
+#### Jobs e Frequência
+
+Três jobs de produção configurados com schedules distintos:
 
 | Job | Frequência | Horário | Motivo |
 |---|---|---|---|
 | `production_full_refresh` | Semanal (domingo) | 02:00 BRT | Rebuild completo para consistência; horário de baixo tráfego |
-| `production_incremental` | Diário | 06:00 BRT | Dados do dia anterior disponíveis antes do expediente dos analistas |
-| `production_incremental` | Diário | 13:00 BRT | Segunda janela para transações da manhã |
-| `ci_test` | A cada PR | — | Gatilhado por webhook do GitHub; bloqueia merge se testes falharem |
+| `production_incremental_morning` | Diário (dias úteis) | 06:00 BRT | Dados do dia anterior disponíveis antes do expediente dos analistas |
+| `production_incremental_afternoon` | Diário (dias úteis) | 13:00 BRT | Segunda janela para transações da manhã |
+
+![Lista de jobs configurados](docs/dbt-cloud/02_jobs_list.png)
+
+**Configuração do job full refresh** — roda `dbt build --full-refresh` com source freshness ativado e geração de docs:
+
+![Configuração do job full refresh](docs/dbt-cloud/03_job_full_refresh_config.png)
+
+**Configuração dos jobs incrementais** — roda `dbt source freshness` seguido de `dbt build`. Se a fonte estiver desatualizada, o job falha com mensagem clara antes de processar dados stale:
+
+![Configuração do job incremental](docs/dbt-cloud/04_job_incremental_config.png)
+
+---
 
 #### Alertas
 
@@ -312,7 +333,11 @@ Este é exatamente o tipo de erro silencioso que gerava "os números nunca batem
 
 **Email** — tech lead (não o CFO diretamente):
 - Falhas no job `production_full_refresh`
-- O tech lead recebe a notificação, investiga a causa raiz e comunica o CFO com a situação **já mapeada** — não apenas "tivemos um problema". A informação que chega ao CFO deve ser mais resolvida do que o alerta bruto.
+- O tech lead recebe a notificação, investiga a causa raiz e comunica o CFO com a situação **já mapeada**. A informação que chega ao CFO deve ser resolvida, não apenas o alerta bruto.
+
+![Notificações configuradas](docs/dbt-cloud/05_notifications.png)
+
+---
 
 #### Dependências e Retries
 
@@ -324,12 +349,3 @@ stg_raw_settlements   ──┘                             └→ merchant_summ
 
 - `retries: 2` nos jobs de produção para falhas transitórias de rede/quota BigQuery
 - `retry_delay_seconds: 300` (5 minutos entre tentativas)
-- Source freshness check antes de cada run incremental, se a fonte estiver desatualizada, o job falha com mensagem clara antes de processar dados stale
-
-#### Environments
-
-| Environment | Target | Materialização padrão | Uso |
-|---|---|---|---|
-| `dev` | dataset pessoal do dev | `view` | Desenvolvimento local |
-| `ci` | dataset efêmero por PR | `view` | Testes de CI |
-| `production` | dataset compartilhado | `table` | Consumo pelos analistas e produto |
